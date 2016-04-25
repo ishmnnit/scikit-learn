@@ -5,7 +5,7 @@
 #          Robert Layton <robertlayton@gmail.com>
 #          Andreas Mueller <amueller@ais.uni-bonn.de>
 #          Philippe Gervais <philippe.gervais@inria.fr>
-#          Lars Buitinck <larsmans@gmail.com>
+#          Lars Buitinck
 #          Joel Nothman <joel.nothman@gmail.com>
 # License: BSD 3 clause
 
@@ -528,8 +528,7 @@ def manhattan_distances(X, Y=None, sum_over_features=True,
 
 
 def cosine_distances(X, Y=None):
-    """
-    Compute cosine distance between samples in X and Y.
+    """Compute cosine distance between samples in X and Y.
 
     Cosine distance is defined as 1.0 minus the cosine similarity.
 
@@ -731,9 +730,12 @@ def polynomial_kernel(X, Y=None, degree=3, gamma=None, coef0=1):
 
     Y : ndarray of shape (n_samples_2, n_features)
 
-    coef0 : int, default 1
-
     degree : int, default 3
+
+    gamma : float, default None
+        if None, defaults to 1.0 / n_samples_1
+
+    coef0 : int, default 1
 
     Returns
     -------
@@ -763,6 +765,9 @@ def sigmoid_kernel(X, Y=None, gamma=None, coef0=1):
     X : ndarray of shape (n_samples_1, n_features)
 
     Y : ndarray of shape (n_samples_2, n_features)
+
+    gamma : float, default None
+        If None, defaults to 1.0 / n_samples_1
 
     coef0 : int, default 1
 
@@ -797,7 +802,8 @@ def rbf_kernel(X, Y=None, gamma=None):
 
     Y : array of shape (n_samples_Y, n_features)
 
-    gamma : float
+    gamma : float, default None
+        If None, defaults to 1.0 / n_samples_X
 
     Returns
     -------
@@ -809,6 +815,40 @@ def rbf_kernel(X, Y=None, gamma=None):
 
     K = euclidean_distances(X, Y, squared=True)
     K *= -gamma
+    np.exp(K, K)    # exponentiate K in-place
+    return K
+
+
+def laplacian_kernel(X, Y=None, gamma=None):
+    """Compute the laplacian kernel between X and Y.
+
+    The laplacian kernel is defined as::
+
+        K(x, y) = exp(-gamma ||x-y||_1)
+
+    for each pair of rows x in X and y in Y.
+    Read more in the :ref:`User Guide <laplacian_kernel>`.
+
+    .. versionadded:: 0.17
+
+    Parameters
+    ----------
+    X : array of shape (n_samples_X, n_features)
+
+    Y : array of shape (n_samples_Y, n_features)
+
+    gamma : float, default None
+        If None, defaults to 1.0 / n_samples_X
+
+    Returns
+    -------
+    kernel_matrix : array of shape (n_samples_X, n_samples_Y)
+    """
+    X, Y = check_pairwise_arrays(X, Y)
+    if gamma is None:
+        gamma = 1.0 / X.shape[1]
+
+    K = -gamma * manhattan_distances(X, Y)
     np.exp(K, K)    # exponentiate K in-place
     return K
 
@@ -837,6 +877,9 @@ def cosine_similarity(X, Y=None, dense_output=True):
     dense_output : boolean (optional), default True
         Whether to return dense output even when the input is sparse. If
         ``False``, the output is sparse if both input arrays are sparse.
+
+        .. versionadded:: 0.17
+           parameter *dense_output* for sparse output.
 
     Returns
     -------
@@ -1184,6 +1227,7 @@ PAIRWISE_KERNEL_FUNCTIONS = {
     'polynomial': polynomial_kernel,
     'poly': polynomial_kernel,
     'rbf': rbf_kernel,
+    'laplacian': laplacian_kernel,
     'sigmoid': sigmoid_kernel,
     'cosine': cosine_similarity, }
 
@@ -1205,6 +1249,7 @@ def kernel_metrics():
       'poly'            sklearn.pairwise.polynomial_kernel
       'polynomial'      sklearn.pairwise.polynomial_kernel
       'rbf'             sklearn.pairwise.rbf_kernel
+      'laplacian'       sklearn.pairwise.laplacian_kernel
       'sigmoid'         sklearn.pairwise.sigmoid_kernel
       'cosine'          sklearn.pairwise.cosine_similarity
       ===============   ========================================
@@ -1223,6 +1268,7 @@ KERNEL_PARAMS = {
     "poly": frozenset(["gamma", "degree", "coef0"]),
     "polynomial": frozenset(["gamma", "degree", "coef0"]),
     "rbf": frozenset(["gamma"]),
+    "laplacian": frozenset(["gamma"]),
     "sigmoid": frozenset(["gamma", "coef0"]),
 }
 
@@ -1295,9 +1341,14 @@ def pairwise_kernels(X, Y=None, metric="linear", filter_params=False,
     If metric is 'precomputed', Y is ignored and X is returned.
 
     """
+    # import GPKernel locally to prevent circular imports
+    from ..gaussian_process.kernels import Kernel as GPKernel
+
     if metric == "precomputed":
         X, _ = check_pairwise_arrays(X, Y, precomputed=True)
         return X
+    elif isinstance(metric, GPKernel):
+        func = metric.__call__
     elif metric in PAIRWISE_KERNEL_FUNCTIONS:
         if filter_params:
             kwds = dict((k, kwds[k]) for k in kwds

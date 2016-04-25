@@ -12,7 +12,7 @@ the lower the better
 #          Olivier Grisel <olivier.grisel@ensta.org>
 #          Arnaud Joly <a.joly@ulg.ac.be>
 #          Jochen Wersdorfer <jochen@wersdoerfer.de>
-#          Lars Buitinck <L.J.Buitinck@uva.nl>
+#          Lars Buitinck
 #          Joel Nothman <joel.nothman@gmail.com>
 #          Noel Dawe <noel@dawe.me>
 # License: BSD 3 clause
@@ -31,9 +31,9 @@ from ..utils.fixes import bincount
 from ..utils.fixes import array_equal
 from ..utils.stats import rankdata
 from ..utils.sparsefuncs import count_nonzero
+from ..exceptions import UndefinedMetricWarning
 
 from .base import _average_binary_score
-from .base import UndefinedMetricWarning
 
 
 def auc(x, y, reorder=False):
@@ -100,7 +100,11 @@ def auc(x, y, reorder=False):
                                  "the x array is not increasing: %s" % x)
 
     area = direction * np.trapz(y, x)
-
+    if isinstance(area, np.memmap):
+        # Reductions such as .sum used internally in np.trapz do not return a
+        # scalar by default for numpy.memmap instances contrary to
+        # regular numpy.ndarray instances.
+        area = area.dtype.type(area)
     return area
 
 
@@ -122,7 +126,8 @@ def average_precision_score(y_true, y_score, average="macro",
 
     y_score : array, shape = [n_samples] or [n_samples, n_classes]
         Target scores, can either be probability estimates of the positive
-        class, confidence values, or binary decisions.
+        class, confidence values, or non-thresholded measure of decisions
+        (as returned by "decision_function" on some classifiers).
 
     average : string, [None, 'micro', 'macro' (default), 'samples', 'weighted']
         If ``None``, the scores for each class are returned. Otherwise,
@@ -150,7 +155,7 @@ def average_precision_score(y_true, y_score, average="macro",
     References
     ----------
     .. [1] `Wikipedia entry for the Average precision
-           <http://en.wikipedia.org/wiki/Average_precision>`_
+           <https://en.wikipedia.org/wiki/Average_precision>`_
 
     See also
     --------
@@ -193,7 +198,8 @@ def roc_auc_score(y_true, y_score, average="macro", sample_weight=None):
 
     y_score : array, shape = [n_samples] or [n_samples, n_classes]
         Target scores, can either be probability estimates of the positive
-        class, confidence values, or binary decisions.
+        class, confidence values, or non-thresholded measure of decisions
+        (as returned by "decision_function" on some classifiers).
 
     average : string, [None, 'micro', 'macro' (default), 'samples', 'weighted']
         If ``None``, the scores for each class are returned. Otherwise,
@@ -221,7 +227,7 @@ def roc_auc_score(y_true, y_score, average="macro", sample_weight=None):
     References
     ----------
     .. [1] `Wikipedia entry for the Receiver operating characteristic
-            <http://en.wikipedia.org/wiki/Receiver_operating_characteristic>`_
+            <https://en.wikipedia.org/wiki/Receiver_operating_characteristic>`_
 
     See also
     --------
@@ -414,7 +420,8 @@ def precision_recall_curve(y_true, probas_pred, pos_label=None,
     return np.r_[precision[sl], 1], np.r_[recall[sl], 0], thresholds[sl]
 
 
-def roc_curve(y_true, y_score, pos_label=None, sample_weight=None):
+def roc_curve(y_true, y_score, pos_label=None, sample_weight=None,
+              drop_intermediate=True):
     """Compute Receiver operating characteristic (ROC)
 
     Note: this implementation is restricted to the binary classification task.
@@ -430,13 +437,22 @@ def roc_curve(y_true, y_score, pos_label=None, sample_weight=None):
 
     y_score : array, shape = [n_samples]
         Target scores, can either be probability estimates of the positive
-        class or confidence values.
+        class, confidence values, or non-thresholded measure of decisions
+        (as returned by "decision_function" on some classifiers).
 
     pos_label : int
         Label considered as positive and others are considered negative.
 
     sample_weight : array-like of shape = [n_samples], optional
         Sample weights.
+
+    drop_intermediate : boolean, optional (default=True)
+        Whether to drop some suboptimal thresholds which would not appear
+        on a plotted ROC curve. This is useful in order to create lighter
+        ROC curves.
+
+        .. versionadded:: 0.17
+           parameter *drop_intermediate*.
 
     Returns
     -------
@@ -466,7 +482,7 @@ def roc_curve(y_true, y_score, pos_label=None, sample_weight=None):
     References
     ----------
     .. [1] `Wikipedia entry for the Receiver operating characteristic
-            <http://en.wikipedia.org/wiki/Receiver_operating_characteristic>`_
+            <https://en.wikipedia.org/wiki/Receiver_operating_characteristic>`_
 
 
     Examples
@@ -486,6 +502,24 @@ def roc_curve(y_true, y_score, pos_label=None, sample_weight=None):
     """
     fps, tps, thresholds = _binary_clf_curve(
         y_true, y_score, pos_label=pos_label, sample_weight=sample_weight)
+
+    # Attempt to drop thresholds corresponding to points in between and
+    # collinear with other points. These are always suboptimal and do not
+    # appear on a plotted ROC curve (and thus do not affect the AUC).
+    # Here np.diff(_, 2) is used as a "second derivative" to tell if there
+    # is a corner at the point. Both fps and tps must be tested to handle
+    # thresholds with multiple data points (which are combined in
+    # _binary_clf_curve). This keeps all cases where the point should be kept,
+    # but does not drop more complicated cases like fps = [1, 3, 7],
+    # tps = [1, 2, 4]; there is no harm in keeping too many thresholds.
+    if drop_intermediate and len(fps) > 2:
+        optimal_idxs = np.where(np.r_[True,
+                                      np.logical_or(np.diff(fps, 2),
+                                                    np.diff(tps, 2)),
+                                      True])[0]
+        fps = fps[optimal_idxs]
+        tps = tps[optimal_idxs]
+        thresholds = thresholds[optimal_idxs]
 
     if tps.size == 0 or fps[0] != 0:
         # Add an extra threshold position if necessary
@@ -534,7 +568,8 @@ def label_ranking_average_precision_score(y_true, y_score):
 
     y_score : array, shape = [n_samples, n_labels]
         Target scores, can either be probability estimates of the positive
-        class, confidence values, or binary decisions.
+        class, confidence values, or non-thresholded measure of decisions
+        (as returned by "decision_function" on some classifiers).
 
     Returns
     -------
@@ -606,7 +641,8 @@ def coverage_error(y_true, y_score, sample_weight=None):
 
     y_score : array, shape = [n_samples, n_labels]
         Target scores, can either be probability estimates of the positive
-        class, confidence values, or binary decisions.
+        class, confidence values, or non-thresholded measure of decisions
+        (as returned by "decision_function" on some classifiers).
 
     sample_weight : array-like of shape = [n_samples], optional
         Sample weights.
@@ -654,6 +690,9 @@ def label_ranking_loss(y_true, y_score, sample_weight=None):
 
     Read more in the :ref:`User Guide <label_ranking_loss>`.
 
+    .. versionadded:: 0.17
+       A function *label_ranking_loss*
+
     Parameters
     ----------
     y_true : array or sparse matrix, shape = [n_samples, n_labels]
@@ -661,7 +700,8 @@ def label_ranking_loss(y_true, y_score, sample_weight=None):
 
     y_score : array, shape = [n_samples, n_labels]
         Target scores, can either be probability estimates of the positive
-        class, confidence values, or binary decisions.
+        class, confidence values, or non-thresholded measure of decisions
+        (as returned by "decision_function" on some classifiers).
 
     sample_weight : array-like of shape = [n_samples], optional
         Sample weights.

@@ -22,10 +22,11 @@ from scipy.linalg.lapack import get_lapack_funcs
 from .base import LinearModel
 from ..base import RegressorMixin
 from ..utils import arrayfuncs, as_float_array, check_X_y
-from ..cross_validation import check_cv
-from ..utils import ConvergenceWarning
+from ..model_selection import check_cv
+from ..exceptions import ConvergenceWarning
 from ..externals.joblib import Parallel, delayed
 from ..externals.six.moves import xrange
+from ..externals.six import string_types
 
 import scipy
 solve_triangular_args = {}
@@ -134,13 +135,13 @@ def lars_path(X, y, Xy=None, Gram=None, max_iter=500,
     References
     ----------
     .. [1] "Least Angle Regression", Effron et al.
-           http://www-stat.stanford.edu/~tibs/ftp/lars.pdf
+           http://statweb.stanford.edu/~tibs/ftp/lars.pdf
 
     .. [2] `Wikipedia entry on the Least-angle regression
-           <http://en.wikipedia.org/wiki/Least-angle_regression>`_
+           <https://en.wikipedia.org/wiki/Least-angle_regression>`_
 
     .. [3] `Wikipedia entry on the Lasso
-           <http://en.wikipedia.org/wiki/Lasso_(statistics)#Lasso_method>`_
+           <https://en.wikipedia.org/wiki/Lasso_(statistics)#Lasso_method>`_
 
     """
 
@@ -179,7 +180,7 @@ def lars_path(X, y, Xy=None, Gram=None, max_iter=500,
             # speeds up the calculation of the (partial) Gram matrix
             # and allows to easily swap columns
             X = X.copy('F')
-    elif Gram == 'auto':
+    elif isinstance(Gram, string_types) and Gram == 'auto':
         Gram = None
         if X.shape[0] > X.shape[1]:
             Gram = np.dot(X.T, X)
@@ -294,9 +295,9 @@ def lars_path(X, y, Xy=None, Gram=None, max_iter=500,
                 # We have degenerate vectors in our active set.
                 # We'll 'drop for good' the last regressor added.
 
-                # Note: this case is very rare. It is no longer triggered by the
-                # test suite. The `equality_tolerance` margin added in 0.16.0 to
-                # get early stopping to work consistently on all versions of
+                # Note: this case is very rare. It is no longer triggered by
+                # the test suite. The `equality_tolerance` margin added in 0.16
+                # to get early stopping to work consistently on all versions of
                 # Python including 32 bit Python under Windows seems to make it
                 # very difficult to trigger the 'drop for good' strategy.
                 warnings.warn('Regressors in active set degenerate. '
@@ -511,7 +512,14 @@ class Lars(LinearModel, RegressorMixin):
         Sets the verbosity amount
 
     normalize : boolean, optional, default False
-        If ``True``, the regressors X will be normalized before regression.
+        If True, the regressors X will be normalized before regression.
+        This parameter is ignored when `fit_intercept` is set to False.
+        When the regressors are normalized, note that this makes the
+        hyperparameters learnt more robust and almost independent of the number
+        of samples. The same property is not valid for standardized data.
+        However, if you wish to standardize, please use
+        `preprocessing.StandardScaler` before calling `fit` on an estimator
+        with `normalize=False`.
 
     precompute : True | False | 'auto' | array-like
         Whether to use a precomputed Gram matrix to speed up
@@ -627,7 +635,7 @@ class Lars(LinearModel, RegressorMixin):
         X, y = check_X_y(X, y, y_numeric=True, multi_output=True)
         n_features = X.shape[1]
 
-        X, y, X_mean, y_mean, X_std = self._center_data(X, y,
+        X, y, X_offset, y_offset, X_scale = self._preprocess_data(X, y,
                                                         self.fit_intercept,
                                                         self.normalize,
                                                         self.copy_X)
@@ -694,7 +702,7 @@ class Lars(LinearModel, RegressorMixin):
             if n_targets == 1:
                 self.alphas_ = self.alphas_[0]
                 self.n_iter_ = self.n_iter_[0]
-        self._set_intercept(X_mean, y_mean, X_std)
+        self._set_intercept(X_offset, y_offset, X_scale)
         return self
 
 
@@ -738,6 +746,13 @@ class LassoLars(Lars):
 
     normalize : boolean, optional, default False
         If True, the regressors X will be normalized before regression.
+        This parameter is ignored when `fit_intercept` is set to False.
+        When the regressors are normalized, note that this makes the
+        hyperparameters learnt more robust and almost independent of the number
+        of samples. The same property is not valid for standardized data.
+        However, if you wish to standardize, please use
+        `preprocessing.StandardScaler` before calling `fit` on an estimator
+        with `normalize=False`.
 
     copy_X : boolean, optional, default True
         If True, X will be copied; else, it may be overwritten.
@@ -888,6 +903,13 @@ def _lars_path_residues(X_train, y_train, X_test, y_test, Gram=None,
 
     normalize : boolean, optional, default False
         If True, the regressors X will be normalized before regression.
+        This parameter is ignored when `fit_intercept` is set to False.
+        When the regressors are normalized, note that this makes the
+        hyperparameters learnt more robust and almost independent of the number
+        of samples. The same property is not valid for standardized data.
+        However, if you wish to standardize, please use
+        `preprocessing.StandardScaler` before calling `fit` on an estimator
+        with `normalize=False`.
 
     max_iter : integer, optional
         Maximum number of iterations to perform.
@@ -967,6 +989,13 @@ class LarsCV(Lars):
 
     normalize : boolean, optional, default False
         If True, the regressors X will be normalized before regression.
+        This parameter is ignored when `fit_intercept` is set to False.
+        When the regressors are normalized, note that this makes the
+        hyperparameters learnt more robust and almost independent of the number
+        of samples. The same property is not valid for standardized data.
+        However, if you wish to standardize, please use
+        `preprocessing.StandardScaler` before calling `fit` on an estimator
+        with `normalize=False`.
 
     copy_X : boolean, optional, default True
         If ``True``, X will be copied; else, it may be overwritten.
@@ -982,10 +1011,11 @@ class LarsCV(Lars):
     cv : int, cross-validation generator or an iterable, optional
         Determines the cross-validation splitting strategy.
         Possible inputs for cv are:
-          - None, to use the default 3-fold cross-validation,
-          - integer, to specify the number of folds.
-          - An object to be used as a cross-validation generator.
-          - An iterable yielding train/test splits.
+
+        - None, to use the default 3-fold cross-validation,
+        - integer, to specify the number of folds.
+        - An object to be used as a cross-validation generator.
+        - An iterable yielding train/test splits.
 
         For integer/None inputs, :class:`KFold` is used.
 
@@ -1074,9 +1104,11 @@ class LarsCV(Lars):
         """
         self.fit_path = True
         X, y = check_X_y(X, y, y_numeric=True)
+        X = as_float_array(X, copy=self.copy_X)
+        y = as_float_array(y, copy=self.copy_X)
 
         # init cross-validation generator
-        cv = check_cv(self.cv, X, y, classifier=False)
+        cv = check_cv(self.cv, classifier=False)
 
         Gram = 'auto' if self.precompute else None
 
@@ -1086,7 +1118,7 @@ class LarsCV(Lars):
                 method=self.method, verbose=max(0, self.verbose - 1),
                 normalize=self.normalize, fit_intercept=self.fit_intercept,
                 max_iter=self.max_iter, eps=self.eps, positive=self.positive)
-            for train, test in cv)
+            for train, test in cv.split(X, y))
         all_alphas = np.concatenate(list(zip(*cv_paths))[0])
         # Unique also sorts
         all_alphas = np.unique(all_alphas)
@@ -1167,6 +1199,13 @@ class LassoLarsCV(LarsCV):
 
     normalize : boolean, optional, default False
         If True, the regressors X will be normalized before regression.
+        This parameter is ignored when `fit_intercept` is set to False.
+        When the regressors are normalized, note that this makes the
+        hyperparameters learnt more robust and almost independent of the number
+        of samples. The same property is not valid for standardized data.
+        However, if you wish to standardize, please use
+        `preprocessing.StandardScaler` before calling `fit` on an estimator
+        with `normalize=False`.
 
     precompute : True | False | 'auto' | array-like
         Whether to use a precomputed Gram matrix to speed up
@@ -1179,10 +1218,11 @@ class LassoLarsCV(LarsCV):
     cv : int, cross-validation generator or an iterable, optional
         Determines the cross-validation splitting strategy.
         Possible inputs for cv are:
-          - None, to use the default 3-fold cross-validation,
-          - integer, to specify the number of folds.
-          - An object to be used as a cross-validation generator.
-          - An iterable yielding train/test splits.
+
+        - None, to use the default 3-fold cross-validation,
+        - integer, to specify the number of folds.
+        - An object to be used as a cross-validation generator.
+        - An iterable yielding train/test splits.
 
         For integer/None inputs, :class:`KFold` is used.
 
@@ -1294,6 +1334,13 @@ class LassoLarsIC(LassoLars):
 
     normalize : boolean, optional, default False
         If True, the regressors X will be normalized before regression.
+        This parameter is ignored when `fit_intercept` is set to False.
+        When the regressors are normalized, note that this makes the
+        hyperparameters learnt more robust and almost independent of the number
+        of samples. The same property is not valid for standardized data.
+        However, if you wish to standardize, please use
+        `preprocessing.StandardScaler` before calling `fit` on an estimator
+        with `normalize=False`.
 
     copy_X : boolean, optional, default True
         If True, X will be copied; else, it may be overwritten.
@@ -1355,8 +1402,8 @@ class LassoLarsIC(LassoLars):
     Hui Zou, Trevor Hastie, and Robert Tibshirani
     Ann. Statist. Volume 35, Number 5 (2007), 2173-2192.
 
-    http://en.wikipedia.org/wiki/Akaike_information_criterion
-    http://en.wikipedia.org/wiki/Bayesian_information_criterion
+    https://en.wikipedia.org/wiki/Akaike_information_criterion
+    https://en.wikipedia.org/wiki/Bayesian_information_criterion
 
     See also
     --------
@@ -1397,7 +1444,7 @@ class LassoLarsIC(LassoLars):
         self.fit_path = True
         X, y = check_X_y(X, y, y_numeric=True)
 
-        X, y, Xmean, ymean, Xstd = LinearModel._center_data(
+        X, y, Xmean, ymean, Xstd = LinearModel._preprocess_data(
             X, y, self.fit_intercept, self.normalize, self.copy_X)
         max_iter = self.max_iter
 

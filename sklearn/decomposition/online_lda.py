@@ -18,10 +18,11 @@ from scipy.special import gammaln
 from ..base import BaseEstimator, TransformerMixin
 from ..utils import (check_random_state, check_array,
                      gen_batches, gen_even_slices, _get_n_jobs)
-from ..utils.validation import NotFittedError, check_non_negative
+from ..utils.validation import check_non_negative
 from ..utils.extmath import logsumexp
 from ..externals.joblib import Parallel, delayed
 from ..externals.six.moves import xrange
+from ..exceptions import NotFittedError
 
 from ._online_lda import (mean_change, _dirichlet_expectation_1d,
                           _dirichlet_expectation_2d)
@@ -66,7 +67,7 @@ def _update_doc_distribution(X, exp_topic_word_distr, doc_topic_prior,
     -------
     (doc_topic_distr, suff_stats) :
         `doc_topic_distr` is unnormalized topic distribution for each document.
-        In the literature, this is `gamma`. we can calcuate `E[log(theta)]`
+        In the literature, this is `gamma`. we can calculate `E[log(theta)]`
         from it.
         `suff_stats` is expected sufficient statistics for the M-step.
             When `cal_sstats == False`, this will be None.
@@ -101,7 +102,8 @@ def _update_doc_distribution(X, exp_topic_word_distr, doc_topic_prior,
             cnts = X[idx_d, ids]
 
         doc_topic_d = doc_topic_distr[idx_d, :]
-        exp_doc_topic_d = exp_doc_topic[idx_d, :]
+        # The next one is a copy, since the inner loop overwrites it.
+        exp_doc_topic_d = exp_doc_topic[idx_d, :].copy()
         exp_topic_word_d = exp_topic_word_distr[:, ids]
 
         # Iterate between `doc_topic_d` and `norm_phi` until convergence
@@ -112,9 +114,11 @@ def _update_doc_distribution(X, exp_topic_word_distr, doc_topic_prior,
             # exp(E[log(theta_{dk})]) * exp(E[log(beta_{dw})]).
             norm_phi = np.dot(exp_doc_topic_d, exp_topic_word_d) + EPS
 
-            doc_topic_d = (doc_topic_prior + exp_doc_topic_d *
+            doc_topic_d = (exp_doc_topic_d *
                            np.dot(cnts / norm_phi, exp_topic_word_d.T))
-            exp_doc_topic_d = _dirichlet_expectation_1d(doc_topic_d)
+            # Note: adds doc_topic_prior to doc_topic_d, in-place.
+            _dirichlet_expectation_1d(doc_topic_d, doc_topic_prior,
+                                      exp_doc_topic_d)
 
             if mean_change(last_d, doc_topic_d) < mean_change_tol:
                 break
@@ -131,6 +135,10 @@ def _update_doc_distribution(X, exp_topic_word_distr, doc_topic_prior,
 
 class LatentDirichletAllocation(BaseEstimator, TransformerMixin):
     """Latent Dirichlet Allocation with online variational Bayes algorithm
+
+    .. versionadded:: 0.17
+
+    Read more in the :ref:`User Guide <LatentDirichletAllocation>`.
 
     Parameters
     ----------
@@ -185,7 +193,7 @@ class LatentDirichletAllocation(BaseEstimator, TransformerMixin):
 
     evaluate_every : int optional (default=0)
         How often to evaluate perplexity. Only used in `fit` method.
-        set it to 0 or and negative number to not evalute perplexity in
+        set it to 0 or negative number to not evalute perplexity in
         training at all. Evaluating perplexity can help you check convergence
         in training process, but it will also increase total training time.
         Evaluating perplexity in every iteration might increase training time
@@ -512,7 +520,8 @@ class LatentDirichletAllocation(BaseEstimator, TransformerMixin):
                 # check perplexity
                 if evaluate_every > 0 and (i + 1) % evaluate_every == 0:
                     doc_topics_distr, _ = self._e_step(X, cal_sstats=False,
-                                                       random_init=False)
+                                                       random_init=False,
+                                                       parallel=parallel)
                     bound = self.perplexity(X, doc_topics_distr,
                                             sub_sampling=False)
                     if self.verbose:
@@ -554,6 +563,8 @@ class LatentDirichletAllocation(BaseEstimator, TransformerMixin):
 
         doc_topic_distr, _ = self._e_step(X, cal_sstats=False,
                                           random_init=False)
+        # normalize doc_topic_distr
+        doc_topic_distr /= doc_topic_distr.sum(axis=1)[:, np.newaxis]
         return doc_topic_distr
 
     def _approx_bound(self, X, doc_topic_distr, sub_sampling):
@@ -574,7 +585,7 @@ class LatentDirichletAllocation(BaseEstimator, TransformerMixin):
 
         sub_sampling : boolean, optional, (default=False)
             Compensate for subsampling of documents.
-            It is used in calcuate bound in online learning.
+            It is used in calculate bound in online learning.
 
         Returns
         -------

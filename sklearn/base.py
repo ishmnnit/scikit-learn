@@ -1,4 +1,5 @@
 """Base classes for all estimators."""
+
 # Author: Gael Varoquaux <gael.varoquaux@normalesup.org>
 # License: BSD 3 clause
 
@@ -9,9 +10,13 @@ import numpy as np
 from scipy import sparse
 from .externals import six
 from .utils.fixes import signature
+from .utils.deprecation import deprecated
+from .exceptions import ChangedBehaviorWarning as _ChangedBehaviorWarning
 
 
-class ChangedBehaviorWarning(UserWarning):
+@deprecated("ChangedBehaviorWarning has been moved into the sklearn.exceptions"
+            " module. It will not be available here from version 0.19")
+class ChangedBehaviorWarning(_ChangedBehaviorWarning):
     pass
 
 
@@ -456,6 +461,24 @@ class TransformerMixin(object):
         else:
             # fit method of arity 2 (supervised transformation)
             return self.fit(X, y, **fit_params).transform(X)
+
+
+class DensityMixin(object):
+    """Mixin class for all density estimators in scikit-learn."""
+    _estimator_type = "DensityEstimator"
+
+    def score(self, X, y=None):
+        """Returns the score of the model on the data X
+
+        Parameters
+        ----------
+        X : array-like, shape = (n_samples, n_features)
+
+        Returns
+        -------
+        score: float
+        """
+        pass
 
 
 ###############################################################################

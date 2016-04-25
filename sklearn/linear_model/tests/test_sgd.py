@@ -14,6 +14,7 @@ from sklearn.utils.testing import assert_raises
 from sklearn.utils.testing import assert_false, assert_true
 from sklearn.utils.testing import assert_equal
 from sklearn.utils.testing import assert_raises_regexp
+from sklearn.utils.testing import ignore_warnings
 
 from sklearn import linear_model, datasets, metrics
 from sklearn.base import clone
@@ -78,7 +79,7 @@ X3 = np.array([[1, 1, 0, 0, 0, 0], [1, 1, 0, 0, 0, 0],
                [0, 0, 0, 1, 0, 0], [0, 0, 0, 1, 0, 0]])
 Y3 = np.array([1, 1, 1, 1, 2, 2, 2, 2])
 
-# test sample 4 - two more or less redundent feature groups
+# test sample 4 - two more or less redundant feature groups
 X4 = np.array([[1, 0.9, 0.8, 0, 0, 0], [1, .84, .98, 0, 0, 0],
                [1, .96, .88, 0, 0, 0], [1, .91, .99, 0, 0, 0],
                [0, 0, 0, .89, .91, 1], [0, 0, 0, .79, .84, 1],
@@ -252,6 +253,12 @@ class CommonTest(object):
                                   average_weights.ravel(),
                                   decimal=16)
         assert_almost_equal(clf1.intercept_, average_intercept, decimal=16)
+
+    @raises(ValueError)
+    def test_sgd_bad_alpha_for_optimal_learning_rate(self):
+        # Check whether expected ValueError on bad alpha, i.e. 0
+        # since alpha is used to compute the optimal learning rate
+        self.factory(alpha=0, learning_rate="optimal")
 
 
 class DenseSGDClassifierTestCase(unittest.TestCase, CommonTest):
@@ -438,7 +445,7 @@ class DenseSGDClassifierTestCase(unittest.TestCase, CommonTest):
         assert_array_equal(pred, true_result2)
 
     def test_set_coef_multiclass(self):
-        # Checks coef_init and intercept_init shape for for multi-class
+        # Checks coef_init and intercept_init shape for multi-class
         # problems
         # Provided coef_ does not match dataset
         clf = self.factory()
@@ -732,6 +739,19 @@ class DenseSGDClassifierTestCase(unittest.TestCase, CommonTest):
         # check that coef_ haven't been re-allocated
         assert_true(id1, id2)
 
+    def test_partial_fit_multiclass_average(self):
+        third = X2.shape[0] // 3
+        clf = self.factory(alpha=0.01, average=X2.shape[0])
+        classes = np.unique(Y2)
+
+        clf.partial_fit(X2[:third], Y2[:third], classes=classes)
+        assert_equal(clf.coef_.shape, (3, X2.shape[1]))
+        assert_equal(clf.intercept_.shape, (3,))
+
+        clf.partial_fit(X2[third:], Y2[third:])
+        assert_equal(clf.coef_.shape, (3, X2.shape[1]))
+        assert_equal(clf.intercept_.shape, (3,))
+
     def test_fit_then_partial_fit(self):
         # Partial_fit should work after initial fit in the multiclass case.
         # Non-regression test for #2496; fit would previously produce a
@@ -1012,6 +1032,7 @@ class DenseSGDRegressorTestCase(unittest.TestCase, CommonTest):
                 assert_almost_equal(cd.coef_, sgd.coef_, decimal=2,
                                     err_msg=err_msg)
 
+    @ignore_warnings
     def test_partial_fit(self):
         third = X.shape[0] // 3
         clf = self.factory(alpha=0.01)
@@ -1019,7 +1040,7 @@ class DenseSGDRegressorTestCase(unittest.TestCase, CommonTest):
         clf.partial_fit(X[:third], Y[:third])
         assert_equal(clf.coef_.shape, (X.shape[1], ))
         assert_equal(clf.intercept_.shape, (1,))
-        assert_equal(clf.decision_function([[0, 0]]).shape, (1, ))
+        assert_equal(clf.predict([[0, 0]]).shape, (1, ))
         id1 = id(clf.coef_.data)
 
         clf.partial_fit(X[third:], Y[third:])

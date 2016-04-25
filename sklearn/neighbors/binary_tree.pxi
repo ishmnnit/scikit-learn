@@ -264,7 +264,7 @@ X : array-like, shape = [n_samples, n_features]
     Note: if X is a C-contiguous array of doubles then data will
     not be copied. Otherwise, an internal copy will be made.
 
-leaf_size : positive integer (default = 20)
+leaf_size : positive integer (default = 40)
     Number of points at which to switch to brute-force. Changing
     leaf_size will not affect the results of a query, but can
     significantly impact the speed of a query and the memory required
@@ -375,7 +375,7 @@ cdef DTYPE_t logsubexp(DTYPE_t x1, DTYPE_t x2):
 ######################################################################
 # Kernel functions
 #
-# Note: Kernels assume dist is non-negative and and h is positive
+# Note: Kernels assume dist is non-negative and h is positive
 #       All kernel functions are normalized such that K(0, h) = 1.
 #       The fully normalized kernel is:
 #         K = exp[kernel_norm(h, d, kernel) + compute_kernel(dist, h, kernel)]

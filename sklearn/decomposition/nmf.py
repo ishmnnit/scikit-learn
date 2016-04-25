@@ -1,7 +1,7 @@
 """ Non-negative matrix factorization
 """
 # Author: Vlad Niculae
-#         Lars Buitinck <L.J.Buitinck@uva.nl>
+#         Lars Buitinck
 #         Mathieu Blondel <mathieu@mblondel.org>
 #         Tom Dupre la Tour
 # Author: Chih-Jen Lin, National Taiwan University (original projected gradient
@@ -10,7 +10,7 @@
 # License: BSD 3 clause
 
 
-from __future__ import division
+from __future__ import division, print_function
 
 from math import sqrt
 import warnings
@@ -26,7 +26,7 @@ from ..utils.extmath import randomized_svd, safe_sparse_dot, squared_norm
 from ..utils.extmath import fast_dot
 from ..utils.validation import check_is_fitted, check_non_negative
 from ..utils import deprecated
-from ..utils import ConvergenceWarning
+from ..exceptions import ConvergenceWarning
 from .cdnmf_fast import _update_cdnmf_fast
 
 
@@ -111,17 +111,23 @@ def _initialize_nmf(X, n_components, init=None, eps=1e-6,
         Method used to initialize the procedure.
         Default: 'nndsvdar' if n_components < n_features, otherwise 'random'.
         Valid options:
-            'random': non-negative random matrices, scaled with:
-                sqrt(X.mean() / n_components)
-            'nndsvd': Nonnegative Double Singular Value Decomposition (NNDSVD)
-                initialization (better for sparseness)
-            'nndsvda': NNDSVD with zeros filled with the average of X
-                (better when sparsity is not desired)
-            'nndsvdar': NNDSVD with zeros filled with small random values
-                (generally faster, less accurate alternative to NNDSVDa
-                for when sparsity is not desired)
 
-    eps: float
+        - 'random': non-negative random matrices, scaled with:
+            sqrt(X.mean() / n_components)
+
+        - 'nndsvd': Nonnegative Double Singular Value Decomposition (NNDSVD)
+            initialization (better for sparseness)
+
+        - 'nndsvda': NNDSVD with zeros filled with the average of X
+            (better when sparsity is not desired)
+
+        - 'nndsvdar': NNDSVD with zeros filled with small random values
+            (generally faster, less accurate alternative to NNDSVDa
+            for when sparsity is not desired)
+
+        - 'custom': use custom matrices W and H
+
+    eps : float
         Truncate all values less then this in output to zero.
 
     random_state : int seed, RandomState instance, or None (default)
@@ -381,9 +387,7 @@ def _update_projected_gradient_h(X, W, H, tolH, nls_max_iter, alpha, l1_ratio,
     elif sparseness == 'components':
         H, gradH, iterH = _nls_subproblem(
             safe_vstack([X, np.zeros((1, n_features))]),
-            safe_vstack([W,
-                         np.sqrt(beta)
-                         * np.ones((1, n_components_))]),
+            safe_vstack([W, np.sqrt(beta) * np.ones((1, n_components_))]),
             H, tolH, nls_max_iter, alpha=alpha, l1_ratio=l1_ratio)
 
     return H, gradH, iterH
@@ -403,10 +407,10 @@ def _fit_projected_gradient(X, W, H, tol, max_iter,
     P. Hoyer. Non-negative Matrix Factorization with Sparseness Constraints.
     Journal of Machine Learning Research 2004.
     """
-    gradW = (np.dot(W, np.dot(H, H.T))
-             - safe_sparse_dot(X, H.T, dense_output=True))
-    gradH = (np.dot(np.dot(W.T, W), H)
-             - safe_sparse_dot(W.T, X, dense_output=True))
+    gradW = (np.dot(W, np.dot(H, H.T)) -
+             safe_sparse_dot(X, H.T, dense_output=True))
+    gradH = (np.dot(np.dot(W.T, W), H) -
+             safe_sparse_dot(W.T, X, dense_output=True))
 
     init_grad = squared_norm(gradW) + squared_norm(gradH.T)
     # max(0.001, tol) to force alternating minimizations of W and H
@@ -448,7 +452,7 @@ def _fit_projected_gradient(X, W, H, tol, max_iter,
     return W, H, n_iter
 
 
-def _update_coordinate_descent(X, W, Ht, alpha, l1_ratio, shuffle,
+def _update_coordinate_descent(X, W, Ht, l1_reg, l2_reg, shuffle,
                                random_state):
     """Helper function for _fit_coordinate_descent
 
@@ -462,20 +466,21 @@ def _update_coordinate_descent(X, W, Ht, alpha, l1_ratio, shuffle,
     HHt = fast_dot(Ht.T, Ht)
     XHt = safe_sparse_dot(X, Ht)
 
-    # L1 and L2 regularizations
-    l1_reg = 1. * l1_ratio * alpha
-    l2_reg = (1. - l1_ratio) * alpha
-
-    # L2 regularization corresponds to increase the diagonal of HHt
+    # L2 regularization corresponds to increase of the diagonal of HHt
     if l2_reg != 0.:
         # adds l2_reg only on the diagonal
         HHt.flat[::n_components + 1] += l2_reg
-    # L1 regularization correponds to decrease each element of XHt
+    # L1 regularization corresponds to decrease of each element of XHt
     if l1_reg != 0.:
         XHt -= l1_reg
 
-    seed = random_state.randint(np.iinfo(np.int32).max)
-    return _update_cdnmf_fast(W, HHt, XHt, shuffle, seed)
+    if shuffle:
+        permutation = random_state.permutation(n_components)
+    else:
+        permutation = np.arange(n_components)
+    # The following seems to be required on 64-bit Windows w/ Python 3.5.
+    permutation = np.asarray(permutation, dtype=np.intp)
+    return _update_cdnmf_fast(W, HHt, XHt, permutation)
 
 
 def _fit_coordinate_descent(X, W, H, tol=1e-4, max_iter=200, alpha=0.001,
@@ -525,8 +530,7 @@ def _fit_coordinate_descent(X, W, H, tol=1e-4, max_iter=200, alpha=0.001,
         The verbosity level.
 
     shuffle : boolean, default: False
-        If True, the samples will be taken in shuffled order during
-        coordinate descent.
+        If true, randomize the order of coordinates in the CD solver.
 
     random_state : integer seed, RandomState instance, or None (default)
         Random number generator seed control.
@@ -553,39 +557,43 @@ def _fit_coordinate_descent(X, W, H, tol=1e-4, max_iter=200, alpha=0.001,
     Ht = check_array(H.T, order='C')
     X = check_array(X, accept_sparse='csr')
 
-    alpha_H = 0.
-    alpha_W = 0.
+    # L1 and L2 regularization
+    l1_H, l2_H, l1_W, l2_W = 0, 0, 0, 0
     if regularization in ('both', 'components'):
-        alpha_H = float(alpha)
+        alpha = float(alpha)
+        l1_H = l1_ratio * alpha
+        l2_H = (1. - l1_ratio) * alpha
     if regularization in ('both', 'transformation'):
-        alpha_W = float(alpha)
+        alpha = float(alpha)
+        l1_W = l1_ratio * alpha
+        l2_W = (1. - l1_ratio) * alpha
 
     rng = check_random_state(random_state)
 
     for n_iter in range(max_iter):
-            violation = 0.
+        violation = 0.
 
-            # Update W
-            violation += _update_coordinate_descent(X, W, Ht, alpha_W,
-                                                    l1_ratio, shuffle, rng)
-            # Update H
-            if update_H:
-                violation += _update_coordinate_descent(X.T, Ht, W, alpha_H,
-                                                        l1_ratio, shuffle, rng)
+        # Update W
+        violation += _update_coordinate_descent(X, W, Ht, l1_W, l2_W,
+                                                shuffle, rng)
+        # Update H
+        if update_H:
+            violation += _update_coordinate_descent(X.T, Ht, W, l1_H, l2_H,
+                                                    shuffle, rng)
 
-            if n_iter == 0:
-                violation_init = violation
+        if n_iter == 0:
+            violation_init = violation
 
-            if violation_init == 0:
-                break
+        if violation_init == 0:
+            break
 
+        if verbose:
+            print("violation:", violation / violation_init)
+
+        if violation / violation_init <= tol:
             if verbose:
-                print("violation:", violation / violation_init)
-
-            if violation / violation_init <= tol:
-                if verbose:
-                    print("Converged at iteration", n_iter + 1)
-                break
+                print("Converged at iteration", n_iter + 1)
+            break
 
     return W, Ht.T, n_iter
 
@@ -637,17 +645,22 @@ def non_negative_factorization(X, W=None, H=None, n_components=None,
     init :  None | 'random' | 'nndsvd' | 'nndsvda' | 'nndsvdar' | 'custom'
         Method used to initialize the procedure.
         Default: 'nndsvd' if n_components < n_features, otherwise random.
-        Valid options::
-            'random': non-negative random matrices, scaled with:
-                sqrt(X.mean() / n_components)
-            'nndsvd': Nonnegative Double Singular Value Decomposition (NNDSVD)
-                initialization (better for sparseness)
-            'nndsvda': NNDSVD with zeros filled with the average of X
-                (better when sparsity is not desired)
-            'nndsvdar': NNDSVD with zeros filled with small random values
-                (generally faster, less accurate alternative to NNDSVDa
-                for when sparsity is not desired)
-            'custom': use custom matrices W and H
+        Valid options:
+
+        - 'random': non-negative random matrices, scaled with:
+            sqrt(X.mean() / n_components)
+
+        - 'nndsvd': Nonnegative Double Singular Value Decomposition (NNDSVD)
+            initialization (better for sparseness)
+
+        - 'nndsvda': NNDSVD with zeros filled with the average of X
+            (better when sparsity is not desired)
+
+        - 'nndsvdar': NNDSVD with zeros filled with small random values
+            (generally faster, less accurate alternative to NNDSVDa
+            for when sparsity is not desired)
+
+        - 'custom': use custom matrices W and H
 
     update_H : boolean, default: True
         Set to True, both W and H will be estimated from initial guesses.
@@ -684,9 +697,8 @@ def non_negative_factorization(X, W=None, H=None, n_components=None,
     verbose : integer, default: 0
         The verbosity level.
 
-    shuffle : boolean
-        If True, the samples will be taken in shuffled order during
-        coordinate descent.
+    shuffle : boolean, default: False
+        If true, randomize the order of coordinates in the CD solver.
 
     nls_max_iter : integer, default: 2000
         Number of iterations in NLS subproblem.
@@ -746,7 +758,7 @@ def non_negative_factorization(X, W=None, H=None, n_components=None,
                          "positive; got (tol=%r)" % tol)
 
     # check W and H, or initialize them
-    if init == 'custom':
+    if init == 'custom' and update_H:
         _check_init(H, (n_components, n_features), "NMF (input H)")
         _check_init(W, (n_samples, n_components), "NMF (input W)")
     elif not update_H:
@@ -825,21 +837,33 @@ class NMF(BaseEstimator, TransformerMixin):
     init :  'random' | 'nndsvd' |  'nndsvda' | 'nndsvdar' | 'custom'
         Method used to initialize the procedure.
         Default: 'nndsvdar' if n_components < n_features, otherwise random.
-        Valid options::
-            'random': non-negative random matrices
-            'nndsvd': Nonnegative Double Singular Value Decomposition (NNDSVD)
-                initialization (better for sparseness)
-            'nndsvda': NNDSVD with zeros filled with the average of X
-                (better when sparsity is not desired)
-            'nndsvdar': NNDSVD with zeros filled with small random values
-                (generally faster, less accurate alternative to NNDSVDa
-                for when sparsity is not desired)
-            'custom': use custom matrices W and H, given in 'fit' method.
+        Valid options:
+
+        - 'random': non-negative random matrices, scaled with:
+            sqrt(X.mean() / n_components)
+
+        - 'nndsvd': Nonnegative Double Singular Value Decomposition (NNDSVD)
+            initialization (better for sparseness)
+
+        - 'nndsvda': NNDSVD with zeros filled with the average of X
+            (better when sparsity is not desired)
+
+        - 'nndsvdar': NNDSVD with zeros filled with small random values
+            (generally faster, less accurate alternative to NNDSVDa
+            for when sparsity is not desired)
+
+        - 'custom': use custom matrices W and H
 
     solver : 'pg' | 'cd'
         Numerical solver to use:
-        'pg' is a (deprecated) Projected Gradient solver.
-        'cd' is a Coordinate Descent solver.
+        'pg' is a Projected Gradient solver (deprecated).
+        'cd' is a Coordinate Descent solver (recommended).
+
+        .. versionadded:: 0.17
+           Coordinate Descent solver.
+
+        .. versionchanged:: 0.17
+           Deprecated Projected Gradient solver.
 
     tol : double, default: 1e-4
         Tolerance value used in stopping conditions.
@@ -854,6 +878,9 @@ class NMF(BaseEstimator, TransformerMixin):
         Constant that multiplies the regularization terms. Set it to zero to
         have no regularization.
 
+        .. versionadded:: 0.17
+           *alpha* used in the Coordinate Descent solver.
+
     l1_ratio : double, default: 0.
         The regularization mixing parameter, with 0 <= l1_ratio <= 1.
         For l1_ratio = 0 the penalty is an elementwise L2 penalty
@@ -861,25 +888,47 @@ class NMF(BaseEstimator, TransformerMixin):
         For l1_ratio = 1 it is an elementwise L1 penalty.
         For 0 < l1_ratio < 1, the penalty is a combination of L1 and L2.
 
-    shuffle : boolean
-        If True, the samples will be taken in shuffled order during
-        coordinate descent.
+        .. versionadded:: 0.17
+           Regularization parameter *l1_ratio* used in the Coordinate Descent
+           solver.
+
+    shuffle : boolean, default: False
+        If true, randomize the order of coordinates in the CD solver.
+
+        .. versionadded:: 0.17
+           *shuffle* parameter used in the Coordinate Descent solver.
 
     nls_max_iter : integer, default: 2000
         Number of iterations in NLS subproblem.
         Used only in the deprecated 'pg' solver.
 
+        .. versionchanged:: 0.17
+           Deprecated Projected Gradient solver. Use Coordinate Descent solver
+           instead.
+
     sparseness : 'data' | 'components' | None, default: None
         Where to enforce sparsity in the model.
         Used only in the deprecated 'pg' solver.
+
+        .. versionchanged:: 0.17
+           Deprecated Projected Gradient solver. Use Coordinate Descent solver
+           instead.
 
     beta : double, default: 1
         Degree of sparseness, if sparseness is not None. Larger values mean
         more sparseness. Used only in the deprecated 'pg' solver.
 
+        .. versionchanged:: 0.17
+           Deprecated Projected Gradient solver. Use Coordinate Descent solver
+           instead.
+
     eta : double, default: 0.1
         Degree of correctness to maintain, if sparsity is not None. Smaller
         values mean larger error. Used only in the deprecated 'pg' solver.
+
+        .. versionchanged:: 0.17
+           Deprecated Projected Gradient solver. Use Coordinate Descent solver
+           instead.
 
     Attributes
     ----------
@@ -1058,10 +1107,194 @@ class NMF(BaseEstimator, TransformerMixin):
         self.n_iter_ = n_iter_
         return W
 
+    def inverse_transform(self, W):
+        """
+        Parameters
+        ----------
+        W: {array-like, sparse matrix}, shape (n_samples, n_components)
+            Transformed Data matrix
+
+        Returns
+        -------
+        X: {array-like, sparse matrix}, shape (n_samples, n_features)
+            Data matrix of original shape
+
+        .. versionadded:: 0.18
+        """
+        check_is_fitted(self, 'n_components_')
+        return np.dot(W, self.components_)
+
 
 @deprecated("It will be removed in release 0.19. Use NMF instead."
             "'pg' solver is still available until release 0.19.")
 class ProjectedGradientNMF(NMF):
+    """Non-Negative Matrix Factorization (NMF)
+
+    Find two non-negative matrices (W, H) whose product approximates the non-
+    negative matrix X. This factorization can be used for example for
+    dimensionality reduction, source separation or topic extraction.
+
+    The objective function is::
+
+        0.5 * ||X - WH||_Fro^2
+        + alpha * l1_ratio * ||vec(W)||_1
+        + alpha * l1_ratio * ||vec(H)||_1
+        + 0.5 * alpha * (1 - l1_ratio) * ||W||_Fro^2
+        + 0.5 * alpha * (1 - l1_ratio) * ||H||_Fro^2
+
+    Where::
+
+        ||A||_Fro^2 = \sum_{i,j} A_{ij}^2 (Frobenius norm)
+        ||vec(A)||_1 = \sum_{i,j} abs(A_{ij}) (Elementwise L1 norm)
+
+    The objective function is minimized with an alternating minimization of W
+    and H.
+
+    Read more in the :ref:`User Guide <NMF>`.
+
+    Parameters
+    ----------
+    n_components : int or None
+        Number of components, if n_components is not set all features
+        are kept.
+
+    init :  'random' | 'nndsvd' |  'nndsvda' | 'nndsvdar' | 'custom'
+        Method used to initialize the procedure.
+        Default: 'nndsvdar' if n_components < n_features, otherwise random.
+        Valid options:
+
+        - 'random': non-negative random matrices, scaled with:
+            sqrt(X.mean() / n_components)
+
+        - 'nndsvd': Nonnegative Double Singular Value Decomposition (NNDSVD)
+            initialization (better for sparseness)
+
+        - 'nndsvda': NNDSVD with zeros filled with the average of X
+            (better when sparsity is not desired)
+
+        - 'nndsvdar': NNDSVD with zeros filled with small random values
+            (generally faster, less accurate alternative to NNDSVDa
+            for when sparsity is not desired)
+
+        - 'custom': use custom matrices W and H
+
+    solver : 'pg' | 'cd'
+        Numerical solver to use:
+        'pg' is a Projected Gradient solver (deprecated).
+        'cd' is a Coordinate Descent solver (recommended).
+
+        .. versionadded:: 0.17
+           Coordinate Descent solver.
+
+        .. versionchanged:: 0.17
+           Deprecated Projected Gradient solver.
+
+    tol : double, default: 1e-4
+        Tolerance value used in stopping conditions.
+
+    max_iter : integer, default: 200
+        Number of iterations to compute.
+
+    random_state : integer seed, RandomState instance, or None (default)
+        Random number generator seed control.
+
+    alpha : double, default: 0.
+        Constant that multiplies the regularization terms. Set it to zero to
+        have no regularization.
+
+        .. versionadded:: 0.17
+           *alpha* used in the Coordinate Descent solver.
+
+    l1_ratio : double, default: 0.
+        The regularization mixing parameter, with 0 <= l1_ratio <= 1.
+        For l1_ratio = 0 the penalty is an elementwise L2 penalty
+        (aka Frobenius Norm).
+        For l1_ratio = 1 it is an elementwise L1 penalty.
+        For 0 < l1_ratio < 1, the penalty is a combination of L1 and L2.
+
+        .. versionadded:: 0.17
+           Regularization parameter *l1_ratio* used in the Coordinate Descent
+           solver.
+
+    shuffle : boolean, default: False
+        If true, randomize the order of coordinates in the CD solver.
+
+        .. versionadded:: 0.17
+           *shuffle* parameter used in the Coordinate Descent solver.
+
+    nls_max_iter : integer, default: 2000
+        Number of iterations in NLS subproblem.
+        Used only in the deprecated 'pg' solver.
+
+        .. versionchanged:: 0.17
+           Deprecated Projected Gradient solver. Use Coordinate Descent solver
+           instead.
+
+    sparseness : 'data' | 'components' | None, default: None
+        Where to enforce sparsity in the model.
+        Used only in the deprecated 'pg' solver.
+
+        .. versionchanged:: 0.17
+           Deprecated Projected Gradient solver. Use Coordinate Descent solver
+           instead.
+
+    beta : double, default: 1
+        Degree of sparseness, if sparseness is not None. Larger values mean
+        more sparseness. Used only in the deprecated 'pg' solver.
+
+        .. versionchanged:: 0.17
+           Deprecated Projected Gradient solver. Use Coordinate Descent solver
+           instead.
+
+    eta : double, default: 0.1
+        Degree of correctness to maintain, if sparsity is not None. Smaller
+        values mean larger error. Used only in the deprecated 'pg' solver.
+
+        .. versionchanged:: 0.17
+           Deprecated Projected Gradient solver. Use Coordinate Descent solver
+           instead.
+
+    Attributes
+    ----------
+    components_ : array, [n_components, n_features]
+        Non-negative components of the data.
+
+    reconstruction_err_ : number
+        Frobenius norm of the matrix difference between
+        the training data and the reconstructed data from
+        the fit produced by the model. ``|| X - WH ||_2``
+
+    n_iter_ : int
+        Actual number of iterations.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> X = np.array([[1,1], [2, 1], [3, 1.2], [4, 1], [5, 0.8], [6, 1]])
+    >>> from sklearn.decomposition import NMF
+    >>> model = NMF(n_components=2, init='random', random_state=0)
+    >>> model.fit(X) #doctest: +ELLIPSIS +NORMALIZE_WHITESPACE
+    NMF(alpha=0.0, beta=1, eta=0.1, init='random', l1_ratio=0.0, max_iter=200,
+      n_components=2, nls_max_iter=2000, random_state=0, shuffle=False,
+      solver='cd', sparseness=None, tol=0.0001, verbose=0)
+
+    >>> model.components_
+    array([[ 2.09783018,  0.30560234],
+           [ 2.13443044,  2.13171694]])
+    >>> model.reconstruction_err_ #doctest: +ELLIPSIS
+    0.00115993...
+
+    References
+    ----------
+    C.-J. Lin. Projected gradient methods for non-negative matrix
+    factorization. Neural Computation, 19(2007), 2756-2779.
+    http://www.csie.ntu.edu.tw/~cjlin/nmf/
+
+    Cichocki, Andrzej, and P. H. A. N. Anh-Huy. "Fast local algorithms for
+    large scale nonnegative matrix and tensor factorizations."
+    IEICE transactions on fundamentals of electronics, communications and
+    computer sciences 92.3: 708-721, 2009.
+    """
 
     def __init__(self, n_components=None, solver='pg', init=None,
                  tol=1e-4, max_iter=200, random_state=None,

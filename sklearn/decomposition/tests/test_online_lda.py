@@ -15,12 +15,12 @@ from sklearn.utils.testing import assert_greater_equal
 from sklearn.utils.testing import assert_raises_regexp
 from sklearn.utils.testing import if_safe_multiprocessing_with_blas
 
-from sklearn.utils.validation import NotFittedError
+from sklearn.exceptions import NotFittedError
 from sklearn.externals.six.moves import xrange
 
 
 def _build_sparse_mtx():
-    # Create 3 topics and each topic has 3 disticnt words.
+    # Create 3 topics and each topic has 3 distinct words.
     # (Each word only belongs to a single topic.)
     n_topics = 3
     block = n_topics * np.ones((3, 3))
@@ -108,13 +108,14 @@ def test_lda_dense_input():
 
 def test_lda_transform():
     # Test LDA transform.
-    # Transform result cannot be negative
+    # Transform result cannot be negative and should be normalized
     rng = np.random.RandomState(0)
     X = rng.randint(5, size=(20, 10))
     n_topics = 3
     lda = LatentDirichletAllocation(n_topics=n_topics, random_state=rng)
     X_trans = lda.fit_transform(X)
     assert_true((X_trans > 0.0).any())
+    assert_array_almost_equal(np.sum(X_trans, axis=1), np.ones(X_trans.shape[0]))
 
 
 def test_lda_fit_transform():
@@ -199,6 +200,7 @@ def test_lda_multi_jobs():
         rng = np.random.RandomState(0)
         lda = LatentDirichletAllocation(n_topics=n_topics, n_jobs=2,
                                         learning_method=method,
+                                        evaluate_every=1,
                                         random_state=rng)
         lda.fit(X)
 
@@ -326,8 +328,9 @@ def test_lda_empty_docs():
 def test_dirichlet_expectation():
     """Test Cython version of Dirichlet expectation calculation."""
     x = np.logspace(-100, 10, 10000)
-    assert_allclose(_dirichlet_expectation_1d(x),
-                    np.exp(psi(x) - psi(np.sum(x))),
+    expectation = np.empty_like(x)
+    _dirichlet_expectation_1d(x, 0, expectation)
+    assert_allclose(expectation, np.exp(psi(x) - psi(np.sum(x))),
                     atol=1e-19)
 
     x = x.reshape(100, 100)
